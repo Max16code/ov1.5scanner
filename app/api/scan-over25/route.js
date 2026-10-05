@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
-import { computeTeamStats, scoreFixture } from '@/lib/scoring';
+import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring-over25';
 import {
   getCachedTeamForm,
   setCachedTeamForm,
@@ -29,7 +29,6 @@ function sanitizeRange(bodyFrom, bodyTo) {
   if (isNaN(from.getTime())) from = today;
   if (isNaN(to.getTime())) to = maxDate;
 
-  // Clamp to [today, today + 28 days]
   if (from < today) from = today;
   if (to > maxDate) to = maxDate;
   if (from > to) from = to;
@@ -39,10 +38,10 @@ function sanitizeRange(bodyFrom, bodyTo) {
 
 async function fetchTeamForm(provider, teamId) {
   const cached = getCachedTeamForm(provider.name, teamId);
-  if (cached) return computeTeamStats(cached, teamId);
+  if (cached) return computeTeamStatsOver25(cached, teamId);
   const fresh = await provider.getTeamSeasonMatches(teamId);
   setCachedTeamForm(provider.name, teamId, fresh);
-  return computeTeamStats(fresh, teamId);
+  return computeTeamStatsOver25(fresh, teamId);
 }
 
 async function fetchInjuries(provider, fixtureId, homeId, awayId) {
@@ -97,19 +96,20 @@ export async function POST(request) {
       const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId);
       const clean = { ...fx };
       delete clean._provider;
-      scored.push({ ...scoreFixture(clean, home, away, injuries), provider: provider.name });
+      scored.push({ ...scoreFixtureOver25(clean, home, away, injuries), provider: provider.name });
     } catch (e) {
       console.error(`${provider.name}: scoring failed:`, e.message);
     }
   }
 
   const top = scored
-    .filter((s) => s.score >= 55)
+    .filter((s) => s.score >= 50)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
+    market: 'over25',
     dateRange: { from, to },
     leaguesScanned: selectedLeagues ?? 'all',
     totalFixtures: allFixtures.length,
