@@ -38,6 +38,10 @@ function sanitizeRange(bodyFrom, bodyTo) {
 }
 
 async function fetchTeamForm(provider, teamId) {
+  if (typeof provider.getTeamStats === "function") {
+    const stats = await provider.getTeamStats(teamId);
+    if (stats) return stats;
+  }
   const cached = getCachedTeamForm(provider.name, teamId);
   if (cached) return computeTeamStats(cached, teamId);
   const fresh = await provider.getTeamSeasonMatches(teamId);

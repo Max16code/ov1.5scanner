@@ -8,6 +8,9 @@ const LEAGUES = [
   { key: 'ita-serie-a', label: 'Serie A', imgSrc: '/logos/seriea.webp', bg: 'linear-gradient(135deg, rgba(59,130,246,0.65), rgba(30,64,175,0.55))', border: 'rgba(147,197,253,0.5)', shadow: '0 4px 24px rgba(59,130,246,0.35)', text: '#fff' },
   { key: 'esp-liga', label: 'La Liga', imgSrc: '/logos/laliga.webp', bg: 'linear-gradient(135deg, rgba(255,75,68,0.75), rgba(127,29,29,0.6))', border: 'rgba(255,75,68,0.6)', shadow: '0 4px 24px rgba(255,75,68,0.4)', text: '#fff' },
   { key: 'de-1', label: 'Bundesliga', imgSrc: '/logos/bundesliga.svg', bg: 'linear-gradient(135deg, rgba(210,5,21,0.75), rgba(142,9,2,0.6))', border: 'rgba(210,5,21,0.6)', shadow: '0 4px 24px rgba(210,5,21,0.4)', text: '#fff' },
+  { key: 'ucl', label: 'Champions League', imgSrc: '/logos/ucl.png', bg: 'linear-gradient(135deg, rgba(14,30,91,0.8), rgba(5,15,45,0.7))', border: 'rgba(120,160,255,0.5)', shadow: '0 4px 24px rgba(14,30,91,0.5)', text: '#fff' },
+  { key: 'nl-eredivisie', label: 'Eredivisie', imgSrc: '/logos/eredivisie.png', bg: 'linear-gradient(135deg, rgba(255,107,0,0.75), rgba(180,60,0,0.6))', border: 'rgba(255,140,60,0.6)', shadow: '0 4px 24px rgba(255,107,0,0.4)', text: '#fff' },
+  { key: 'pt-primeira', label: 'Primeira Liga', imgSrc: '/logos/primeira.webp', bg: 'linear-gradient(135deg, rgba(209,10,17,0.75), rgba(120,5,10,0.6))', border: 'rgba(209,10,17,0.6)', shadow: '0 4px 24px rgba(209,10,17,0.4)', text: '#fff' },
 ];
 
 const MAX_DAYS = 28;
@@ -28,6 +31,22 @@ function maxDateStr() {
   const d = new Date();
   d.setDate(d.getDate() + MAX_DAYS);
   return ymd(d);
+}
+
+function Spinner() {
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        width: '28px',
+        height: '28px',
+        border: '3px solid rgba(255,255,255,0.15)',
+        borderTopColor: 'rgba(255,255,255,0.9)',
+        borderRadius: '50%',
+        animation: 'spin 0.8s linear infinite',
+      }}
+    />
+  );
 }
 
 export default function Home() {
@@ -174,11 +193,19 @@ export default function Home() {
           <div style={{ padding: '1rem', background: 'rgba(127,29,29,0.5)', border: '1px solid rgba(127,29,29,0.5)', color: '#fca5a5', borderRadius: '1rem', marginBottom: '1rem', fontSize: '0.875rem' }}>{error}</div>
         )}
 
-        {data && data.results.length === 0 && (
+        {loading && (
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4rem 1rem', gap: '1rem' }}>
+    <Spinner />
+    <p style={{ color: '#9ca3af', fontSize: '0.875rem', fontWeight: 500 }}>Computing…</p>
+    <p style={{ color: '#4b5563', fontSize: '0.75rem' }}>Analysing fixtures, form and expected goals</p>
+  </div>
+)}
+
+{!loading && data && data.results.length === 0 && (
           <p style={{ color: '#9ca3af', fontSize: '0.875rem' }}>No fixtures met the threshold in this date range.</p>
         )}
 
-        {data && data.results.length > 0 && (
+        {!loading && data && data.results.length > 0 && (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', fontSize: '0.875rem', borderCollapse: 'collapse' }}>
               <thead>
