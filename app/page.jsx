@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 const LEAGUES = [
+  { key: 'hot40', label: 'H🔥T 40', bg: 'linear-gradient(135deg, rgba(250,180,30,0.85), rgba(200,120,0,0.7))', border: 'rgba(255,200,80,0.6)', shadow: '0 4px 24px rgba(250,180,30,0.5)', text: '#fff' },
   { key: 'eng-pl', label: 'Premier League', imgSrc: '/logos/pl.svg', bg: 'linear-gradient(135deg, rgba(168,85,247,0.65), rgba(88,28,135,0.55))', border: 'rgba(216,180,254,0.5)', shadow: '0 4px 24px rgba(168,85,247,0.35)', text: '#fff' },
   { key: 'eng-champ', label: 'Championship', imgSrc: '/logos/champ.webp', bg: 'linear-gradient(135deg, rgba(212,175,55,0.75), rgba(133,100,20,0.6))', border: 'rgba(212,175,55,0.6)', shadow: '0 4px 24px rgba(212,175,55,0.4)', text: '#fff' },
   { key: 'ita-serie-a', label: 'Serie A', imgSrc: '/logos/seriea.webp', bg: 'linear-gradient(135deg, rgba(59,130,246,0.65), rgba(30,64,175,0.55))', border: 'rgba(147,197,253,0.5)', shadow: '0 4px 24px rgba(59,130,246,0.35)', text: '#fff' },
@@ -11,6 +12,7 @@ const LEAGUES = [
   { key: 'ucl', label: 'Champions League', imgSrc: '/logos/ucl.png', bg: 'linear-gradient(135deg, rgba(14,30,91,0.8), rgba(5,15,45,0.7))', border: 'rgba(120,160,255,0.5)', shadow: '0 4px 24px rgba(14,30,91,0.5)', text: '#fff' },
   { key: 'nl-eredivisie', label: 'Eredivisie', imgSrc: '/logos/eredivisie.png', bg: 'linear-gradient(135deg, rgba(255,107,0,0.75), rgba(180,60,0,0.6))', border: 'rgba(255,140,60,0.6)', shadow: '0 4px 24px rgba(255,107,0,0.4)', text: '#fff' },
   { key: 'pt-primeira', label: 'Primeira Liga', imgSrc: '/logos/primeira.webp', bg: 'linear-gradient(135deg, rgba(209,10,17,0.75), rgba(120,5,10,0.6))', border: 'rgba(209,10,17,0.6)', shadow: '0 4px 24px rgba(209,10,17,0.4)', text: '#fff' },
+  { key: 'fr-1', label: 'Ligue 1', imgSrc: '/logos/ligue1.jpg', bg: 'linear-gradient(135deg, rgba(9,28,62,0.9), rgba(0,10,30,0.75))', border: 'rgba(80,120,180,0.6)', shadow: '0 4px 24px rgba(9,28,62,0.5)', text: '#fff' },
 ];
 
 const MAX_DAYS = 28;
@@ -63,11 +65,18 @@ export default function Home() {
     setActive(leagues ? leagues.join(',') : 'all');
     setError(null);
     try {
-      const endpoint = selectedMarket === 'over25' ? '/api/scan-over25' : '/api/scan';
+      let endpoint;
+      if (leagues && leagues[0] === 'hot40' && selectedMarket === 'over15') {
+        endpoint = '/api/hot40';
+      } else if (selectedMarket === 'over25') {
+        endpoint = '/api/scan-over25';
+      } else {
+        endpoint = '/api/scan';
+      }
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leagues, from: fromDate, to: toDate }),
+        body: JSON.stringify({ leagues, from: fromDate, to: toDate, market: selectedMarket }),
       });
       if (!res.ok) throw new Error(await res.text());
       setData(await res.json());
@@ -153,7 +162,7 @@ export default function Home() {
             {loading && active === 'all' ? 'Scanning…' : '▶ SCAN ALL'}
           </button>
 
-          {LEAGUES.map((lg) => (
+          {LEAGUES.filter((lg) => lg.key !== 'hot40' || market === 'over15').map((lg) => (
             <button
               key={lg.key}
               onClick={() => runScan([lg.key])}
@@ -174,7 +183,7 @@ export default function Home() {
                 lineHeight: 1,
               }}
             >
-              <img
+              {lg.imgSrc && <img
                 src={lg.imgSrc}
                 alt=""
                 style={{
@@ -186,7 +195,7 @@ export default function Home() {
                   padding: '2px',
                   flexShrink: 0,
                 }}
-              />
+              />}
               {loading && active === lg.key ? 'Scanning…' : lg.label}
             </button>
           ))}
