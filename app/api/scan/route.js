@@ -50,19 +50,55 @@ async function fetchTeamForm(provider, teamId) {
 }
 
 async function fetchInjuries(provider, fixtureId, homeId, awayId) {
+  if (typeof provider.getTeamAvailability === "function") {
+    const home = await provider.getTeamAvailability(homeId);
+    const away = await provider.getTeamAvailability(awayId);
+    return { homeKeyOut: home.weightedOut, awayKeyOut: away.weightedOut };
+  }
   const cached = getCachedInjuries(provider.name, fixtureId);
   const list = cached ?? (await provider.getInjuries(fixtureId));
-  if (!cached) setCachedInjuries(provider.name, fixtureId, list);
-  let homeKeyOut = 0, awayKeyOut = 0;
+  if (cached === null) setCachedInjuries(provider.name, fixtureId, list);
+  let homeKeyOut = 0;
+  let awayKeyOut = 0;
   for (const inj of list) {
-    const type = (inj.player?.type ?? '').toLowerCase();
-    const reason = (inj.player?.reason ?? '').toLowerCase();
-    const isAbsence = type.includes('missing') || reason.includes('injur') || reason.includes('suspension');
-    if (!isAbsence) continue;
+    const type = (inj.player?.type ?? "").toLowerCase();
+    const reason = (inj.player?.reason ?? "").toLowerCase();
+    const isAbsence = type.includes("missing") || reason.includes("injur") || reason.includes("suspension");
     if (inj.team?.id === homeId) homeKeyOut++;
     else if (inj.team?.id === awayId) awayKeyOut++;
   }
   return { homeKeyOut, awayKeyOut };
+}
+
+function normalizeTeamName(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/\b(fc|afc|sc|ac|cf|united|utd|city|town)\b/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+function dedupeFixtures(scored) {
+  const seen = new Map();
+  const out = [];
+  for (const s of scored) {
+    const home = normalizeTeamName(s.homeTeamName);
+    const away = normalizeTeamName(s.awayTeamName);
+    const key = home + '|' + away;
+    const existing = seen.get(key);
+    if (existing) {
+      // Prefer the BSD entry (has injury info) over openfootball
+      if (s.provider === 'bzzoiro' && existing.provider !== 'bzzoiro') {
+        const idx = out.indexOf(existing);
+        out[idx] = s;
+        seen.set(key, s);
+      }
+      continue;
+    }
+    seen.set(key, s);
+    out.push(s);
+  }
+  return out;
 }
 
 export async function POST(request) {
@@ -107,7 +143,9 @@ export async function POST(request) {
     }
   }
 
-  const top = scored
+  const deduped = dedupeFixtures(scored);
+
+  const top = deduped
     .filter((s) => s.score >= 55)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);

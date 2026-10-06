@@ -114,6 +114,9 @@ export default function Home() {
       <div style={{ maxWidth: '72rem', margin: '0 auto', padding: '1rem', position: 'relative' }}>
         <header style={{ marginBottom: '1.5rem' }}>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Over {label} Scanner</h1>
+          <div style={{ marginTop: '0.75rem', padding: '0.625rem 0.875rem', background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.25)', borderRadius: '0.75rem', fontSize: '0.75rem', color: '#fbbf24', lineHeight: 1.5, maxWidth: '42rem' }}>
+            <strong style={{ color: '#fcd34d' }}>BEST TIME TO SCAN:</strong> within 24 hours of kickoff. Injury data is a live snapshot, for fixtures further out the injury component is directional, not precise.
+          </div>
           {data && (
             <p style={{ fontSize: '0.875rem', color: '#9ca3af', marginTop: '0.125rem' }}>
               {data.totalFixtures} fixtures · {new Date(data.scannedAt).toLocaleTimeString()}

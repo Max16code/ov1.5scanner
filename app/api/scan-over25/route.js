@@ -60,6 +60,37 @@ async function fetchInjuries(provider, fixtureId, homeId, awayId) {
   return { homeKeyOut, awayKeyOut };
 }
 
+function normalizeTeamName(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/\b(fc|afc|sc|ac|cf|united|utd|city|town)\b/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+function dedupeFixtures(scored) {
+  const seen = new Map();
+  const out = [];
+  for (const s of scored) {
+    const home = normalizeTeamName(s.homeTeamName);
+    const away = normalizeTeamName(s.awayTeamName);
+    const key = home + '|' + away;
+    const existing = seen.get(key);
+    if (existing) {
+      // Prefer the BSD entry (has injury info) over openfootball
+      if (s.provider === 'bzzoiro' && existing.provider !== 'bzzoiro') {
+        const idx = out.indexOf(existing);
+        out[idx] = s;
+        seen.set(key, s);
+      }
+      continue;
+    }
+    seen.set(key, s);
+    out.push(s);
+  }
+  return out;
+}
+
 export async function POST(request) {
   let selectedLeagues = null;
   let bodyFrom = null, bodyTo = null;
@@ -102,7 +133,9 @@ export async function POST(request) {
     }
   }
 
-  const top = scored
+  const deduped = dedupeFixtures(scored);
+
+  const top = deduped
     .filter((s) => s.score >= 50)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
