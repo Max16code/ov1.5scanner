@@ -8,11 +8,14 @@ import {
   getCachedInjuries,
   setCachedInjuries,
 } from '@/lib/cache';
+// WIRE_INJURIES_V1 — team matcher + BSD team list for openfootball fixtures
+import { buildBsdIndex, findBsdTeamId } from '@/lib/team-matcher';
+import * as bzzoiroModule from '@/lib/providers/bzzoiro';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const MAX_DAYS_AHEAD = 28;
+const MAX_DAYS_AHEAD = 14;
 
 function ymd(date) {
   return date.toISOString().slice(0, 10);
@@ -48,25 +51,33 @@ async function fetchTeamForm(provider, teamId) {
   return computeTeamStats(fresh, teamId);
 }
 
-async function fetchInjuries(provider, fixtureId, homeId, awayId) {
+async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, awayName, bsdIndex) {
   if (typeof provider.getTeamAvailability === 'function') {
     const home = await provider.getTeamAvailability(homeId);
     const away = await provider.getTeamAvailability(awayId);
     return { homeKeyOut: home.weightedOut, awayKeyOut: away.weightedOut };
   }
-  const cached = getCachedInjuries(provider.name, fixtureId);
-  const list = cached ?? (await provider.getInjuries(fixtureId));
-  if (!cached) setCachedInjuries(provider.name, fixtureId, list);
-  let homeKeyOut = 0, awayKeyOut = 0;
-  for (const inj of list) {
-    const type = (inj.player?.type ?? '').toLowerCase();
-    const reason = (inj.player?.reason ?? '').toLowerCase();
-    const isAbsence = type.includes('missing') || reason.includes('injur') || reason.includes('suspension');
-    if (!isAbsence) continue;
-    if (inj.team?.id === homeId) homeKeyOut++;
-    else if (inj.team?.id === awayId) awayKeyOut++;
+
+  if (bsdIndex && typeof bzzoiroModule.getTeamAvailability === 'function') {
+    let homeKeyOut = 0, awayKeyOut = 0;
+    try {
+      const homeBsd = homeName ? findBsdTeamId(homeName, bsdIndex) : null;
+      if (homeBsd) {
+        const stats = await bzzoiroModule.getTeamAvailability('bsd|' + homeBsd.id);
+        homeKeyOut = stats.weightedOut || 0;
+      }
+      const awayBsd = awayName ? findBsdTeamId(awayName, bsdIndex) : null;
+      if (awayBsd) {
+        const stats = await bzzoiroModule.getTeamAvailability('bsd|' + awayBsd.id);
+        awayKeyOut = stats.weightedOut || 0;
+      }
+    } catch (e) {
+      console.error('injury lookup failed:', e.message);
+    }
+    return { homeKeyOut, awayKeyOut };
   }
-  return { homeKeyOut, awayKeyOut };
+
+  return { homeKeyOut: 0, awayKeyOut: 0 };
 }
 
 function normalizeTeamName(name) {
@@ -112,6 +123,12 @@ export async function POST(request) {
   }
 
   console.log('HOT40 DEBUG: fixtures fetched:', allFixtures.length);
+  // PREFER_OPENFOOTBALL: sort so openfootball fixtures are deduped first.
+  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
+  allFixtures.sort((a, b) =>
+    (providerRank[a._provider?.name] ?? 99) - (providerRank[b._provider?.name] ?? 99)
+  );
+
   const seen = new Set();
   const uniqueFixtures = [];
   for (const fx of allFixtures) {
@@ -122,13 +139,23 @@ export async function POST(request) {
   }
 
   console.log('HOT40 DEBUG: unique fixtures:', uniqueFixtures.length);
+  // WIRE_INJURIES_V1 — fetch BSD team list once, build the name lookup index
+  let bsdIndex = null;
+  try {
+    const bsdTeams = await bzzoiroModule.getBsdTeamList();
+    bsdIndex = buildBsdIndex(bsdTeams);
+    console.log('injury index built with', bsdTeams.length, 'teams');
+  } catch (e) {
+    console.error('failed to build BSD team index:', e.message);
+  }
+
   const scored = [];
   for (const fx of uniqueFixtures) {
     const provider = fx._provider;
     try {
       const home = await fetchTeamForm(provider, fx.homeTeamId);
       const away = await fetchTeamForm(provider, fx.awayTeamId);
-      const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId);
+      const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId, fx.homeTeamName, fx.awayTeamName, bsdIndex);
       const clean = { ...fx };
       delete clean._provider;
 

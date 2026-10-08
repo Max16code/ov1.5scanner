@@ -15,7 +15,7 @@ const LEAGUES = [
   { key: 'fr-1', label: 'Ligue 1', imgSrc: '/logos/ligue1.jpg', bg: 'linear-gradient(135deg, rgba(9,28,62,0.9), rgba(0,10,30,0.75))', border: 'rgba(80,120,180,0.6)', shadow: '0 4px 24px rgba(9,28,62,0.5)', text: '#fff' },
 ];
 
-const MAX_DAYS = 28;
+const MAX_DAYS = 14;
 
 function ymd(date) {
   const d = new Date(date);
