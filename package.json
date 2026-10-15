@@ -11,8 +11,10 @@
     "electron-build": "next build && node scripts/copy-standalone.js && electron-builder"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
     "better-sqlite3": "^13.0.3",
     "next": "16.3.8",
+    "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "resend": "^6.32.1",

@@ -11,6 +11,7 @@ import {
 // WIRE_INJURIES_V1 — team matcher + BSD team list for openfootball fixtures
 import { buildBsdIndex, findBsdTeamId } from '@/lib/team-matcher';
 import * as bzzoiroModule from '@/lib/providers/bzzoiro';
+import { logPicks } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -194,6 +195,14 @@ export async function POST(request) {
   const top = candidates
     .sort((a, b) => b.displayScore - a.displayScore)
     .slice(0, 40);
+
+  // Log every pick to the database for later outcome tracking
+  try {
+    const trackResult = await logPicks(top, 'over15');
+    console.log('tracked picks:', trackResult.inserted, 'inserted,', trackResult.skipped, 'skipped');
+  } catch (e) {
+    console.error('tracking failed (non-fatal):', e.message);
+  }
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
