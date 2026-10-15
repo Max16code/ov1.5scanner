@@ -1,3 +1,4 @@
+import { logPicks } from '@/lib/db';
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
 import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring-over25';
@@ -171,6 +172,13 @@ export async function POST(request) {
     .filter((s) => s.score >= 50)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
+
+  try {
+    const trackResult = await logPicks(top, 'over25');
+    console.log('scan tracked:', trackResult.inserted, 'inserted,', trackResult.skipped, 'skipped');
+  } catch (e) {
+    console.error('scan tracking failed:', e.message);
+  }
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
