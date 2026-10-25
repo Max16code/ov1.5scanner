@@ -1,16 +1,15 @@
-import { logPicks } from '@/lib/db';
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
-import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring-over25';
+import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring';
 import {
   getCachedTeamForm,
   setCachedTeamForm,
   getCachedInjuries,
   setCachedInjuries,
 } from '@/lib/cache';
-// WIRE_INJURIES_V1 — team matcher + BSD team list for openfootball fixtures
-import { buildBsdIndex, findBsdTeamId } from '@/lib/team-matcher';
+import { findBsdTeamId, mergeMatchHistory, normalizeTeamName } from '@/lib/team-matcher';
 import * as bzzoiroModule from '@/lib/providers/bzzoiro';
+import { logPicks } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -40,12 +39,35 @@ function sanitizeRange(bodyFrom, bodyTo) {
   return { from: ymd(from), to: ymd(to) };
 }
 
-async function fetchTeamForm(provider, teamId) {
+async function fetchTeamForm(provider, teamId, teamName, bsdIndex) {
+  if (typeof provider.getTeamStats === 'function') {
+    const stats = await provider.getTeamStats(teamId);
+    if (stats) return stats;
+  }
+
   const cached = getCachedTeamForm(provider.name, teamId);
-  if (cached) return computeTeamStatsOver25(cached, teamId);
-  const fresh = await provider.getTeamSeasonMatches(teamId);
-  setCachedTeamForm(provider.name, teamId, fresh);
-  return computeTeamStatsOver25(fresh, teamId);
+  let baseMatches;
+  if (cached) {
+    baseMatches = cached;
+  } else {
+    baseMatches = await provider.getTeamSeasonMatches(teamId);
+    setCachedTeamForm(provider.name, teamId, baseMatches);
+  }
+
+  if (bsdIndex && teamName && typeof bzzoiroModule.getRecentMatches === 'function') {
+    const bsdTeam = findBsdTeamId(teamName, bsdIndex);
+    if (bsdTeam) {
+      try {
+        const recent = await bzzoiroModule.getRecentMatches(bsdTeam.id, 60);
+        const merged = mergeMatchHistory(baseMatches, recent);
+        return computeTeamStatsOver25(merged, teamId);
+      } catch (e) {
+        console.error('BSD enrichment failed for', teamName, ':', e.message);
+      }
+    }
+  }
+
+  return computeTeamStatsOver25(baseMatches, teamId);
 }
 
 async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, awayName, bsdIndex) {
@@ -77,35 +99,23 @@ async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, away
   return { homeKeyOut: 0, awayKeyOut: 0 };
 }
 
-function normalizeTeamName(name) {
-  return String(name)
-    .toLowerCase()
-    .replace(/\b(fc|afc|sc|ac|cf|united|utd|city|town)\b/g, '')
-    .replace(/[^a-z0-9]/g, '')
-    .trim();
-}
-
-function dedupeFixtures(scored) {
+function finalDedup(scored) {
+  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
   const seen = new Map();
-  const out = [];
-  for (const s of scored) {
-    const home = normalizeTeamName(s.homeTeamName);
-    const away = normalizeTeamName(s.awayTeamName);
-    const key = home + '|' + away;
+  for (const item of scored) {
+    const key = normalizeTeamName(item.homeTeamName) + '|' + normalizeTeamName(item.awayTeamName);
     const existing = seen.get(key);
-    if (existing) {
-      // Prefer the BSD entry (has injury info) over openfootball
-      if (s.provider === 'bzzoiro' && existing.provider !== 'bzzoiro') {
-        const idx = out.indexOf(existing);
-        out[idx] = s;
-        seen.set(key, s);
-      }
+    if (!existing) {
+      seen.set(key, item);
       continue;
     }
-    seen.set(key, s);
-    out.push(s);
+    const existingRank = providerRank[existing.provider] ?? 99;
+    const newRank = providerRank[item.provider] ?? 99;
+    if (newRank < existingRank) {
+      seen.set(key, item);
+    }
   }
-  return out;
+  return Array.from(seen.values());
 }
 
 export async function POST(request) {
@@ -119,8 +129,8 @@ export async function POST(request) {
   } catch {}
 
   const { from, to } = sanitizeRange(bodyFrom, bodyTo);
-
   const providers = getActiveProviders();
+
   const allFixtures = [];
 
   for (const provider of providers) {
@@ -131,45 +141,50 @@ export async function POST(request) {
       const fixtures = await provider.getFixtures({ leagueIds, from, to });
       allFixtures.push(...fixtures.map((f) => ({ ...f, _provider: provider })));
     } catch (e) {
-      console.error(`${provider.name}: getFixtures failed:`, e.message);
+      console.error(provider.name + ': getFixtures failed:', e.message);
     }
   }
 
-  // WIRE_INJURIES_V1 — fetch BSD team list once, build the name lookup index
-  let bsdIndex = null;
-  try {
-    const bsdTeams = await bzzoiroModule.getBsdTeamList();
-    bsdIndex = buildBsdIndex(bsdTeams);
-    console.log('injury index built with', bsdTeams.length, 'teams');
-  } catch (e) {
-    console.error('failed to build BSD team index:', e.message);
+  let bsdIndex = new Map();
+  for (const fx of allFixtures) {
+    if (fx._provider.name === 'bzzoiro') {
+      const homeKey = normalizeTeamName(fx.homeTeamName);
+      const awayKey = normalizeTeamName(fx.awayTeamName);
+      if (homeKey && !bsdIndex.has(homeKey)) {
+        bsdIndex.set(homeKey, { id: String(fx.homeTeamId).replace('bsd|', ''), name: fx.homeTeamName });
+      }
+      if (awayKey && !bsdIndex.has(awayKey)) {
+        bsdIndex.set(awayKey, { id: String(fx.awayTeamId).replace('bsd|', ''), name: fx.awayTeamName });
+      }
+    }
   }
+  console.log('bsdIndex built from fixtures with', bsdIndex.size, 'teams');
 
   const scored = [];
+
   for (const fx of allFixtures) {
     const provider = fx._provider;
     try {
-      const home = await fetchTeamForm(provider, fx.homeTeamId);
-      const away = await fetchTeamForm(provider, fx.awayTeamId);
+      const home = await fetchTeamForm(provider, fx.homeTeamId, fx.homeTeamName, bsdIndex);
+      const away = await fetchTeamForm(provider, fx.awayTeamId, fx.awayTeamName, bsdIndex);
       const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId, fx.homeTeamName, fx.awayTeamName, bsdIndex);
       const clean = { ...fx };
       delete clean._provider;
-      scored.push({ ...scoreFixtureOver25(clean, home, away, injuries), provider: provider.name });
+      const scoredResult = scoreFixtureOver25(clean, home, away, injuries);
+      scored.push({ ...scoredResult, provider: provider.name });
     } catch (e) {
-      console.error(`${provider.name}: scoring failed:`, e.message);
+      console.error(provider.name + ': scoring failed:', e.message);
     }
   }
 
-  // PREFER_OPENFOOTBALL: sort so openfootball is processed first.
-  // The dedup keeps the first-seen entry, so openfootball wins for shared leagues.
   const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
   const sortedByProvider = scored.slice().sort((a, b) =>
     (providerRank[a.provider] ?? 99) - (providerRank[b.provider] ?? 99)
   );
-  const deduped = dedupeFixtures(sortedByProvider);
+  const deduped = finalDedup(sortedByProvider);
 
   const top = deduped
-    .filter((s) => s.score >= 50)
+    .filter((s) => s.score >= 45)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
 
@@ -182,7 +197,6 @@ export async function POST(request) {
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
-    market: 'over25',
     dateRange: { from, to },
     leaguesScanned: selectedLeagues ?? 'all',
     totalFixtures: allFixtures.length,

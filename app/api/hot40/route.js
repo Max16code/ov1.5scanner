@@ -1,15 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
 import { computeTeamStats, scoreFixture } from '@/lib/scoring';
-import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring-over25';
 import {
   getCachedTeamForm,
   setCachedTeamForm,
   getCachedInjuries,
   setCachedInjuries,
 } from '@/lib/cache';
-// WIRE_INJURIES_V1 — team matcher + BSD team list for openfootball fixtures
-import { buildBsdIndex, findBsdTeamId } from '@/lib/team-matcher';
+import { findBsdTeamId, mergeMatchHistory, normalizeTeamName } from '@/lib/team-matcher';
 import * as bzzoiroModule from '@/lib/providers/bzzoiro';
 import { logPicks } from '@/lib/db';
 
@@ -33,6 +31,7 @@ function sanitizeRange(bodyFrom, bodyTo) {
 
   if (isNaN(from.getTime())) from = today;
   if (isNaN(to.getTime())) to = maxDate;
+
   if (from < today) from = today;
   if (to > maxDate) to = maxDate;
   if (from > to) from = to;
@@ -40,16 +39,35 @@ function sanitizeRange(bodyFrom, bodyTo) {
   return { from: ymd(from), to: ymd(to) };
 }
 
-async function fetchTeamForm(provider, teamId) {
+async function fetchTeamForm(provider, teamId, teamName, bsdIndex) {
   if (typeof provider.getTeamStats === 'function') {
     const stats = await provider.getTeamStats(teamId);
     if (stats) return stats;
   }
+
   const cached = getCachedTeamForm(provider.name, teamId);
-  if (cached) return computeTeamStats(cached, teamId);
-  const fresh = await provider.getTeamSeasonMatches(teamId);
-  setCachedTeamForm(provider.name, teamId, fresh);
-  return computeTeamStats(fresh, teamId);
+  let baseMatches;
+  if (cached) {
+    baseMatches = cached;
+  } else {
+    baseMatches = await provider.getTeamSeasonMatches(teamId);
+    setCachedTeamForm(provider.name, teamId, baseMatches);
+  }
+
+  if (bsdIndex && teamName && typeof bzzoiroModule.getRecentMatches === 'function') {
+    const bsdTeam = findBsdTeamId(teamName, bsdIndex);
+    if (bsdTeam) {
+      try {
+        const recent = await bzzoiroModule.getRecentMatches(bsdTeam.id, 60);
+        const merged = mergeMatchHistory(baseMatches, recent);
+        return computeTeamStats(merged, teamId);
+      } catch (e) {
+        console.error('BSD enrichment failed for', teamName, ':', e.message);
+      }
+    }
+  }
+
+  return computeTeamStats(baseMatches, teamId);
 }
 
 async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, awayName, bsdIndex) {
@@ -81,36 +99,40 @@ async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, away
   return { homeKeyOut: 0, awayKeyOut: 0 };
 }
 
-function normalizeTeamName(name) {
-  return String(name)
-    .toLowerCase()
-    .replace(/\b(fc|afc|sc|ac|cf|united|utd|city|town)\b/g, '')
-    .replace(/[^a-z0-9]/g, '')
-    .trim();
+function finalDedup(scored) {
+  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
+  const seen = new Map();
+  for (const item of scored) {
+    const key = normalizeTeamName(item.homeTeamName) + '|' + normalizeTeamName(item.awayTeamName);
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, item);
+      continue;
+    }
+    const existingRank = providerRank[existing.provider] ?? 99;
+    const newRank = providerRank[item.provider] ?? 99;
+    if (newRank < existingRank) {
+      seen.set(key, item);
+    }
+  }
+  return Array.from(seen.values());
 }
 
 export async function POST(request) {
   let selectedLeagues = null;
   let bodyFrom = null, bodyTo = null;
-  let market = 'over15';
   try {
     const body = await request.json();
     if (Array.isArray(body?.leagues) && body.leagues.length > 0) selectedLeagues = body.leagues;
     if (typeof body?.from === 'string') bodyFrom = body.from;
     if (typeof body?.to === 'string') bodyTo = body.to;
-    if (body?.market === 'over25') market = 'over25';
   } catch {}
 
   const { from, to } = sanitizeRange(bodyFrom, bodyTo);
-
-  // HOT40 scans every league — clear the filter if the pill key was sent
-  if (selectedLeagues && selectedLeagues.includes('hot40')) {
-    selectedLeagues = null;
-  }
-
   const providers = getActiveProviders();
 
   const allFixtures = [];
+
   for (const provider of providers) {
     let leagueIds = LEAGUE_SELECTION[provider.name] || [];
     if (selectedLeagues) leagueIds = leagueIds.filter((id) => selectedLeagues.includes(id));
@@ -119,96 +141,65 @@ export async function POST(request) {
       const fixtures = await provider.getFixtures({ leagueIds, from, to });
       allFixtures.push(...fixtures.map((f) => ({ ...f, _provider: provider })));
     } catch (e) {
-      console.error(`${provider.name}: getFixtures failed:`, e.message);
+      console.error(provider.name + ': getFixtures failed:', e.message);
     }
   }
 
-  console.log('HOT40 DEBUG: fixtures fetched:', allFixtures.length);
-  // PREFER_OPENFOOTBALL: sort so openfootball fixtures are deduped first.
-  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
-  allFixtures.sort((a, b) =>
-    (providerRank[a._provider?.name] ?? 99) - (providerRank[b._provider?.name] ?? 99)
-  );
-
-  const seen = new Set();
-  const uniqueFixtures = [];
+  let bsdIndex = new Map();
   for (const fx of allFixtures) {
-    const key = normalizeTeamName(fx.homeTeamName) + '|' + normalizeTeamName(fx.awayTeamName);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniqueFixtures.push(fx);
+    if (fx._provider.name === 'bzzoiro') {
+      const homeKey = normalizeTeamName(fx.homeTeamName);
+      const awayKey = normalizeTeamName(fx.awayTeamName);
+      if (homeKey && !bsdIndex.has(homeKey)) {
+        bsdIndex.set(homeKey, { id: String(fx.homeTeamId).replace('bsd|', ''), name: fx.homeTeamName });
+      }
+      if (awayKey && !bsdIndex.has(awayKey)) {
+        bsdIndex.set(awayKey, { id: String(fx.awayTeamId).replace('bsd|', ''), name: fx.awayTeamName });
+      }
+    }
   }
-
-  console.log('HOT40 DEBUG: unique fixtures:', uniqueFixtures.length);
-  // WIRE_INJURIES_V1 — fetch BSD team list once, build the name lookup index
-  let bsdIndex = null;
-  try {
-    const bsdTeams = await bzzoiroModule.getBsdTeamList();
-    bsdIndex = buildBsdIndex(bsdTeams);
-    console.log('injury index built with', bsdTeams.length, 'teams');
-  } catch (e) {
-    console.error('failed to build BSD team index:', e.message);
-  }
+  console.log('bsdIndex built from fixtures with', bsdIndex.size, 'teams');
 
   const scored = [];
-  for (const fx of uniqueFixtures) {
+
+  for (const fx of allFixtures) {
     const provider = fx._provider;
     try {
-      const home = await fetchTeamForm(provider, fx.homeTeamId);
-      const away = await fetchTeamForm(provider, fx.awayTeamId);
+      const home = await fetchTeamForm(provider, fx.homeTeamId, fx.homeTeamName, bsdIndex);
+      const away = await fetchTeamForm(provider, fx.awayTeamId, fx.awayTeamName, bsdIndex);
       const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId, fx.homeTeamName, fx.awayTeamName, bsdIndex);
       const clean = { ...fx };
       delete clean._provider;
-
-      const result15 = scoreFixture(clean, home, away, injuries);
-      const result25 = scoreFixtureOver25(clean, home, away, injuries);
-
-      scored.push({
-        ...result15,
-        scoreOver15: result15.score,
-        scoreOver25: result25.score,
-        provider: provider.name,
-      });
+      const scoredResult = scoreFixture(clean, home, away, injuries);
+      scored.push({ ...scoredResult, provider: provider.name });
     } catch (e) {
-      console.error(`${provider.name}: scoring failed:`, e.message);
+      console.error(provider.name + ': scoring failed:', e.message);
     }
   }
 
-  console.log('HOT40 DEBUG: scored:', scored.length);
-  console.log('HOT40 DEBUG: sample scores:', scored.slice(0, 3).map(function(x){return x.scoreOver15 + '/' + x.scoreOver25;}));
-  const isOver25 = market === 'over25';
-  const threshold = isOver25 ? 45 : 55;
-  const scoreKey = isOver25 ? 'scoreOver25' : 'scoreOver15';
+  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
+  const sortedByProvider = scored.slice().sort((a, b) =>
+    (providerRank[a.provider] ?? 99) - (providerRank[b.provider] ?? 99)
+  );
+  const deduped = finalDedup(sortedByProvider);
 
-  const candidates = scored
-    .filter(function(x) { return x[scoreKey] >= threshold; })
-    .map(function(x) {
-      return Object.assign({}, x, {
-        market: isOver25 ? '2.5' : '1.5',
-        displayScore: x[scoreKey],
-        score: x[scoreKey],
-      });
-    })
-    .sort(function(a, b) { return b.displayScore - a.displayScore; });
-
-  console.log('HOT40 DEBUG: candidates after threshold:', candidates.length);
-  const top = candidates
-    .sort((a, b) => b.displayScore - a.displayScore)
+  const top = deduped
+    .filter((s) => s.score >= 55)
+    .sort((a, b) => b.score - a.score)
     .slice(0, 40);
 
-  // Log every pick to the database for later outcome tracking
   try {
     const trackResult = await logPicks(top, 'over15');
-    console.log('tracked picks:', trackResult.inserted, 'inserted,', trackResult.skipped, 'skipped');
+    console.log('scan tracked:', trackResult.inserted, 'inserted,', trackResult.skipped, 'skipped');
   } catch (e) {
-    console.error('tracking failed (non-fatal):', e.message);
+    console.error('scan tracking failed:', e.message);
   }
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
     dateRange: { from, to },
-    market: isOver25 ? '2.5' : '1.5',
-    totalFixtures: uniqueFixtures.length,
+    leaguesScanned: selectedLeagues ?? 'all',
+    totalFixtures: allFixtures.length,
     results: top,
   });
 }
