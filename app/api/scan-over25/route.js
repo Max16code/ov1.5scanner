@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
-import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring';
+import { computeTeamStatsOver25, scoreFixtureOver25 } from '@/lib/scoring-over25';
 import {
   getCachedTeamForm,
   setCachedTeamForm,
