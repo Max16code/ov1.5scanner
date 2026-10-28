@@ -129,6 +129,11 @@ export async function POST(request) {
   } catch {}
 
   const { from, to } = sanitizeRange(bodyFrom, bodyTo);
+
+  // HOT40 scans every league — clear the filter if the pill key was sent
+  if (selectedLeagues && selectedLeagues.includes('hot40')) {
+    selectedLeagues = null;
+  }
   const providers = getActiveProviders();
 
   const allFixtures = [];
