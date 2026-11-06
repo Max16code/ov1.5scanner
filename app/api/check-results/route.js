@@ -1,3 +1,4 @@
+import { normalizeTeamName } from '@/lib/team-matcher';
 import { NextResponse } from 'next/server';
 import { getPendingPicks, resolvePick } from '@/lib/db';
 
@@ -40,10 +41,15 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
     if (res.ok) {
       const json = await res.json();
       const events = json.results || [];
-      const match = events.find(e => 
-        (e.home_team.includes(homeTeam.split(' ')[0]) || homeTeam.includes(e.home_team.split(' ')[0])) &&
-        (e.away_team.includes(awayTeam.split(' ')[0]) || awayTeam.includes(e.away_team.split(' ')[0]))
-      );
+      const normHome = normalizeTeamName(homeTeam);
+      const normAway = normalizeTeamName(awayTeam);
+      const match = events.find(e => {
+        const eHome = normalizeTeamName(e.home_team);
+        const eAway = normalizeTeamName(e.away_team);
+        const homeMatch = eHome.includes(normHome) || normHome.includes(eHome);
+        const awayMatch = eAway.includes(normAway) || normAway.includes(eAway);
+        return homeMatch && awayMatch;
+      });
       if (match && match.status === 'finished') return match;
     }
   } catch (e) {}
