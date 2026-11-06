@@ -1,7 +1,7 @@
-import { LEAGUE_MAP } from '@/lib/providers/bzzoiro';
-import { normalizeTeamName } from '@/lib/team-matcher';
 import { NextResponse } from 'next/server';
 import { getPendingPicks, resolvePick } from '@/lib/db';
+import { normalizeTeamName } from '@/lib/team-matcher';
+import { LEAGUE_MAP } from '@/lib/providers/bzzoiro';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -16,12 +16,11 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
   if (cleanId.startsWith('of|')) {
     isOpenFootball = true;
     const parts = cleanId.split('|');
-    leagueCode = parts[1]; // Extracts 'eng-champ', 'esp-liga', etc.
+    leagueCode = parts[1];
   } else {
     cleanId = cleanId.replace(/^bsd\|/, '');
   }
 
-  // 1. Direct BSD lookup
   if (!isOpenFootball) {
     try {
       const res = await fetch(`${HOST}/api/v2/events/${cleanId}/`, {
@@ -33,15 +32,16 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
         if (json.status === 'finished') return json;
       }
     } catch (e) {
-      console.error('Direct event fetch failed:', e.message);
+      console.error('Direct fetch failed:', e.message);
     }
   }
 
-  // 2. Fallback for OpenFootball IDs (using league ID + smart name matching)
-  const dateStr = kickoffDate.toISOString().slice(0, 10);
+  // Search a 3-day window to account for timezone shifts
+  const prevDateStr = new Date(kickoffDate.getTime() - 864e5).toISOString().slice(0, 10);
+  const nextDateStr = new Date(kickoffDate.getTime() + 864e5).toISOString().slice(0, 10);
   const bsdLeagueId = LEAGUE_MAP[leagueCode];
 
-  let url = `${HOST}/api/v2/events/?date_from=${dateStr}&date_to=${dateStr}&limit=200`;
+  let url = `${HOST}/api/v2/events/?date_from=${prevDateStr}&date_to=${nextDateStr}&limit=300`;
   if (bsdLeagueId) {
     url += `&league_id=${bsdLeagueId}`;
   }
@@ -67,9 +67,7 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
         return homeMatch && awayMatch;
       });
 
-      if (match && match.status === 'finished') return match;
-    } else {
-      console.error('Fallback API error:', res.status, await res.text());
+      if (match) return match;
     }
   } catch (e) {
     console.error('Fallback fetch failed:', e.message);
@@ -91,20 +89,18 @@ export async function GET(request) {
   for (const pick of pending) {
     try {
       const event = await fetchEventResult(pick.fixture_id, pick.home_team, pick.away_team, pick.kickoff);
-      const home = event.home_score;
-      const away = event.away_score;
-
-      if (!event || home === null || away === null || event.status !== 'finished') {
+      
+      if (!event || event.home_score === null || event.away_score === null || event.status !== 'finished') {
         pendingStill++;
         continue;
       }
 
-      const total = home + away;
+      const total = event.home_score + event.away_score;
       const outcome = total >= 2 ? 'hit' : 'miss';
-      await resolvePick(pick.id, outcome, `${home}-${away}`);
+      await resolvePick(pick.id, outcome, `${event.home_score}-${event.away_score}`);
       resolved++;
     } catch (e) {
-      console.error(`check-results failed for pick ${pick.id}:`, e.message);
+      console.error('Error processing pick:', e.message);
       errors++;
     }
   }
