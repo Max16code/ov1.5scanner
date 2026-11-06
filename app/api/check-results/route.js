@@ -1,3 +1,4 @@
+import { LEAGUE_MAP } from '@/lib/providers/bzzoiro';
 import { normalizeTeamName } from '@/lib/team-matcher';
 import { NextResponse } from 'next/server';
 import { getPendingPicks, resolvePick } from '@/lib/db';
@@ -10,14 +11,17 @@ const HOST = 'https://sports.bzzoiro.com';
 async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
   let cleanId = String(fixtureId);
   let isOpenFootball = false;
+  let leagueCode = null;
 
   if (cleanId.startsWith('of|')) {
     isOpenFootball = true;
+    const parts = cleanId.split('|');
+    leagueCode = parts[1]; // Extracts 'eng-champ', 'esp-liga', etc.
   } else {
     cleanId = cleanId.replace(/^bsd\|/, '');
   }
 
-  // Direct BSD lookup
+  // 1. Direct BSD lookup
   if (!isOpenFootball) {
     try {
       const res = await fetch(`${HOST}/api/v2/events/${cleanId}/`, {
@@ -28,21 +32,33 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
         const json = await res.json();
         if (json.status === 'finished') return json;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Direct event fetch failed:', e.message);
+    }
   }
 
-  // Fallback for OpenFootball IDs: search BSD by date and team names
+  // 2. Fallback for OpenFootball IDs (using league ID + smart name matching)
   const dateStr = kickoffDate.toISOString().slice(0, 10);
+  const bsdLeagueId = LEAGUE_MAP[leagueCode];
+
+  let url = `${HOST}/api/v2/events/?date_from=${dateStr}&date_to=${dateStr}&limit=200`;
+  if (bsdLeagueId) {
+    url += `&league_id=${bsdLeagueId}`;
+  }
+
   try {
-    const res = await fetch(`${HOST}/api/v2/events/?date_from=${dateStr}&date_to=${dateStr}&limit=200`, {
+    const res = await fetch(url, {
       headers: { Authorization: `Token ${process.env.BZZOIRO_API_KEY}` },
       next: { revalidate: 0 },
     });
+
     if (res.ok) {
       const json = await res.json();
       const events = json.results || [];
+      
       const normHome = normalizeTeamName(homeTeam);
       const normAway = normalizeTeamName(awayTeam);
+      
       const match = events.find(e => {
         const eHome = normalizeTeamName(e.home_team);
         const eAway = normalizeTeamName(e.away_team);
@@ -50,9 +66,14 @@ async function fetchEventResult(fixtureId, homeTeam, awayTeam, kickoffDate) {
         const awayMatch = eAway.includes(normAway) || normAway.includes(eAway);
         return homeMatch && awayMatch;
       });
+
       if (match && match.status === 'finished') return match;
+    } else {
+      console.error('Fallback API error:', res.status, await res.text());
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('Fallback fetch failed:', e.message);
+  }
 
   return null;
 }
