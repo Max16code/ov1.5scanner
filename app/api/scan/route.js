@@ -1,12 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
 import { computeTeamStats, scoreFixture } from '@/lib/scoring';
-import {
-  getCachedTeamForm,
-  setCachedTeamForm,
-  getCachedInjuries,
-  setCachedInjuries,
-} from '@/lib/cache';
+import { getCachedTeamForm, setCachedTeamForm, getCachedInjuries, setCachedInjuries } from '@/lib/cache';
 import { findBsdTeamId, mergeMatchHistory, normalizeTeamName } from '@/lib/team-matcher';
 import * as bzzoiroModule from '@/lib/providers/bzzoiro';
 import { logPicks } from '@/lib/db';
@@ -31,7 +26,6 @@ function sanitizeRange(bodyFrom, bodyTo) {
 
   if (isNaN(from.getTime())) from = today;
   if (isNaN(to.getTime())) to = maxDate;
-
   if (from < today) from = today;
   if (to > maxDate) to = maxDate;
   if (from > to) from = to;
@@ -99,23 +93,43 @@ async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, away
   return { homeKeyOut: 0, awayKeyOut: 0 };
 }
 
+function isSameTeam(a, b) {
+  if (!a || !b) return false;
+  const n1 = normalizeTeamName(a);
+  const n2 = normalizeTeamName(b);
+  if (n1 === n2) return true;
+  if (n1.length > 4 && n2.length > 4 && (n1.includes(n2) || n2.includes(n1))) return true;
+  
+  const ignore = ['club', 'fc', 'real', 'sporting', 'athletic', 'racing', 'deportivo', 'cadiz'];
+  const getWords = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !ignore.includes(w));
+  const w1 = getWords(a);
+  const w2 = getWords(b);
+  if (w1.length > 0 && w2.length > 0) {
+    if (w1.some(word => w2.includes(word))) return true;
+  }
+  return false;
+}
+
 function finalDedup(scored) {
   const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
-  const seen = new Map();
+  const seen = [];
   for (const item of scored) {
-    const key = normalizeTeamName(item.homeTeamName) + '|' + normalizeTeamName(item.awayTeamName);
-    const existing = seen.get(key);
-    if (!existing) {
-      seen.set(key, item);
-      continue;
-    }
-    const existingRank = providerRank[existing.provider] ?? 99;
-    const newRank = providerRank[item.provider] ?? 99;
-    if (newRank < existingRank) {
-      seen.set(key, item);
+    const existing = seen.find((x) => isSameTeam(x.homeTeamName, item.homeTeamName) && isSameTeam(x.awayTeamName, item.awayTeamName));
+    
+    if (existing) {
+      const existingRank = providerRank[existing.provider] ?? 99;
+      const newRank = providerRank[item.provider] ?? 99;
+      if (newRank > existingRank && item.provider === 'bzzoiro') {
+        existing.kickoff = item.kickoff;
+      } else if (newRank < existingRank) {
+        const idx = seen.indexOf(existing);
+        seen[idx] = item;
+      }
+    } else {
+      seen.push(item);
     }
   }
-  return Array.from(seen.values());
+  return seen;
 }
 
 export async function POST(request) {
@@ -150,31 +164,55 @@ export async function POST(request) {
     if (fx._provider.name === 'bzzoiro') {
       const homeKey = normalizeTeamName(fx.homeTeamName);
       const awayKey = normalizeTeamName(fx.awayTeamName);
-      if (homeKey && !bsdIndex.has(homeKey)) {
+      if (homeKey && bsdIndex.has(homeKey) === false) {
         bsdIndex.set(homeKey, { id: String(fx.homeTeamId).replace('bsd|', ''), name: fx.homeTeamName });
       }
-      if (awayKey && !bsdIndex.has(awayKey)) {
+      if (awayKey && bsdIndex.has(awayKey) === false) {
         bsdIndex.set(awayKey, { id: String(fx.awayTeamId).replace('bsd|', ''), name: fx.awayTeamName });
       }
     }
   }
-  console.log('bsdIndex built from fixtures with', bsdIndex.size, 'teams');
+
+  const formCache = new Map();
+  const injuryCache = new Map();
+
+  async function getTeamFormCached(provider, teamId, teamName) {
+    const key = provider.name + '|' + teamId;
+    if (formCache.has(key) === false) {
+      formCache.set(key, fetchTeamForm(provider, teamId, teamName, bsdIndex));
+    }
+    return formCache.get(key);
+  }
+
+  async function getInjuriesCached(provider, fixtureId, homeId, awayId, homeName, awayName) {
+    const key = provider.name + '|' + fixtureId;
+    if (injuryCache.has(key) === false) {
+      injuryCache.set(key, fetchInjuries(provider, fixtureId, homeId, awayId, homeName, awayName, bsdIndex));
+    }
+    return injuryCache.get(key);
+  }
 
   const scored = [];
-
-  for (const fx of allFixtures) {
+  const promises = allFixtures.map(async (fx) => {
     const provider = fx._provider;
     try {
-      const home = await fetchTeamForm(provider, fx.homeTeamId, fx.homeTeamName, bsdIndex);
-      const away = await fetchTeamForm(provider, fx.awayTeamId, fx.awayTeamName, bsdIndex);
-      const injuries = await fetchInjuries(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId, fx.homeTeamName, fx.awayTeamName, bsdIndex);
+      const [home, away, injuries] = await Promise.all([
+        getTeamFormCached(provider, fx.homeTeamId, fx.homeTeamName),
+        getTeamFormCached(provider, fx.awayTeamId, fx.awayTeamName),
+        getInjuriesCached(provider, fx.fixtureId, fx.homeTeamId, fx.awayTeamId, fx.homeTeamName, fx.awayTeamName)
+      ]);
       const clean = { ...fx };
       delete clean._provider;
-      const scoredResult = scoreFixture(clean, home, away, injuries);
-      scored.push({ ...scoredResult, provider: provider.name });
+      return { ...scoreFixture(clean, home, away, injuries), provider: provider.name };
     } catch (e) {
       console.error(provider.name + ': scoring failed:', e.message);
+      return null;
     }
+  });
+
+  const results = await Promise.all(promises);
+  for (const res of results) {
+    if (res) scored.push(res);
   }
 
   const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
