@@ -122,7 +122,7 @@ export default function Home() {
 
       <div style={{ maxWidth: '72rem', margin: '0 auto', padding: '1rem', position: 'relative' }}>
         <header style={{ marginBottom: '1.5rem' }}>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Over {label} Scanner</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}><h1 style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Over {label} Scanner</h1><a href="/admin" style={{ fontSize: '0.75rem', background: 'rgba(255,255,255,0.1)', padding: '0.25rem 0.5rem', borderRadius: '0.25rem', color: '#9ca3af', textDecoration: 'none' }}>Admin</a></div>
           <div style={{ marginTop: '0.75rem', padding: '0.625rem 0.875rem', background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.25)', borderRadius: '0.75rem', fontSize: '0.75rem', color: '#fbbf24', lineHeight: 1.5, maxWidth: '42rem' }}>
             <strong style={{ color: '#fcd34d' }}>BEST TIME TO SCAN:</strong> within 24 hours of kickoff. Injury data is a live snapshot, for fixtures further out the injury component is directional, not precise.
           </div>
