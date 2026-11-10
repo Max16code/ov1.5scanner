@@ -100,7 +100,6 @@ function isSameTeam(a, b) {
   if (n1 === n2) return true;
   if (n1.length > 4 && n2.length > 4 && (n1.includes(n2) || n2.includes(n1))) return true;
   
-  // Token-based matching (e.g., "RC Keruno" vs "Deportivo La Coruna" share "coruna")
   const ignore = ['club', 'fc', 'real', 'sporting', 'athletic', 'racing', 'deportivo', 'cadiz'];
   const getWords = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !ignore.includes(w));
   const w1 = getWords(a);
@@ -116,129 +115,6 @@ function finalDedup(scored) {
   const seen = [];
   for (const item of scored) {
     const existing = seen.find((x) => isSameTeam(x.homeTeamName, item.homeTeamName) && isSameTeam(x.awayTeamName, item.awayTeamName));
-    
-    if (existing) {
-      const existingRank = providerRank[existing.provider] ?? 99;
-      const newRank = providerRank[item.provider] ?? 99;
-      if (newRank > existingRank && item.provider === 'bzzoiro') {
-        existing.kickoff = item.kickoff;
-      } else if (newRank < existingRank) {
-        const idx = seen.indexOf(existing);
-        seen[idx] = item;
-      }
-    } else {
-      seen.push(item);
-    }
-  }
-  return seen;
-} from 'next/server';
-import { getActiveProviders, LEAGUE_SELECTION } from '@/lib/provider-index';
-import { computeTeamStats, scoreFixture } from '@/lib/scoring';
-import { getCachedTeamForm, setCachedTeamForm, getCachedInjuries, setCachedInjuries } from '@/lib/cache';
-import { findBsdTeamId, mergeMatchHistory, normalizeTeamName } from '@/lib/team-matcher';
-import * as bzzoiroModule from '@/lib/providers/bzzoiro';
-import { logPicks } from '@/lib/db';
-
-export const runtime = 'nodejs';
-export const maxDuration = 60;
-
-const MAX_DAYS_AHEAD = 14;
-
-function ymd(date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function sanitizeRange(bodyFrom, bodyTo) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const maxDate = new Date(today);
-  maxDate.setDate(maxDate.getDate() + MAX_DAYS_AHEAD);
-
-  let from = bodyFrom ? new Date(bodyFrom) : today;
-  let to = bodyTo ? new Date(bodyTo) : maxDate;
-
-  if (isNaN(from.getTime())) from = today;
-  if (isNaN(to.getTime())) to = maxDate;
-  if (from < today) from = today;
-  if (to > maxDate) to = maxDate;
-  if (from > to) from = to;
-
-  return { from: ymd(from), to: ymd(to) };
-}
-
-async function fetchTeamForm(provider, teamId, teamName, bsdIndex) {
-  if (typeof provider.getTeamStats === 'function') {
-    const stats = await provider.getTeamStats(teamId);
-    if (stats) return stats;
-  }
-
-  const cached = getCachedTeamForm(provider.name, teamId);
-  let baseMatches;
-  if (cached) {
-    baseMatches = cached;
-  } else {
-    baseMatches = await provider.getTeamSeasonMatches(teamId);
-    setCachedTeamForm(provider.name, teamId, baseMatches);
-  }
-
-  if (bsdIndex && teamName && typeof bzzoiroModule.getRecentMatches === 'function') {
-    const bsdTeam = findBsdTeamId(teamName, bsdIndex);
-    if (bsdTeam) {
-      try {
-        const recent = await bzzoiroModule.getRecentMatches(bsdTeam.id, 60);
-        const merged = mergeMatchHistory(baseMatches, recent);
-        return computeTeamStats(merged, teamId);
-      } catch (e) {
-        console.error('BSD enrichment failed for', teamName, ':', e.message);
-      }
-    }
-  }
-
-  return computeTeamStats(baseMatches, teamId);
-}
-
-async function fetchInjuries(provider, fixtureId, homeId, awayId, homeName, awayName, bsdIndex) {
-  if (typeof provider.getTeamAvailability === 'function') {
-    const home = await provider.getTeamAvailability(homeId);
-    const away = await provider.getTeamAvailability(awayId);
-    return { homeKeyOut: home.weightedOut, awayKeyOut: away.weightedOut };
-  }
-
-  if (bsdIndex && typeof bzzoiroModule.getTeamAvailability === 'function') {
-    let homeKeyOut = 0, awayKeyOut = 0;
-    try {
-      const homeBsd = homeName ? findBsdTeamId(homeName, bsdIndex) : null;
-      if (homeBsd) {
-        const stats = await bzzoiroModule.getTeamAvailability('bsd|' + homeBsd.id);
-        homeKeyOut = stats.weightedOut || 0;
-      }
-      const awayBsd = awayName ? findBsdTeamId(awayName, bsdIndex) : null;
-      if (awayBsd) {
-        const stats = await bzzoiroModule.getTeamAvailability('bsd|' + awayBsd.id);
-        awayKeyOut = stats.weightedOut || 0;
-      }
-    } catch (e) {
-      console.error('injury lookup failed:', e.message);
-    }
-    return { homeKeyOut, awayKeyOut };
-  }
-
-  return { homeKeyOut: 0, awayKeyOut: 0 };
-}
-
-function finalDedup(scored) {
-  const providerRank = { 'openfootball': 0, 'bzzoiro': 1, 'api-football': 2 };
-  const seen = [];
-  for (const item of scored) {
-    const existing = seen.find((x) => {
-      const h1 = normalizeTeamName(x.homeTeamName);
-      const h2 = normalizeTeamName(item.homeTeamName);
-      const a1 = normalizeTeamName(x.awayTeamName);
-      const a2 = normalizeTeamName(item.awayTeamName);
-      const homeMatch = h1.includes(h2) || h2.includes(h1);
-      const awayMatch = a1.includes(a2) || a2.includes(a1);
-      return homeMatch && awayMatch;
-    });
     
     if (existing) {
       const existingRank = providerRank[existing.provider] ?? 99;
